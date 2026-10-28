@@ -521,6 +521,31 @@
   @media(max-width:380px){
     .wrong-item .wr-acts .icobtn{font-size:14px;padding:4px 5px}
   }
+
+  /* ---------- 导出范围 ---------- */
+  #export-scope-list{
+    max-height:170px;overflow:auto;
+    padding:6px 10px;background:#f7f9fd;
+    border:1px solid #e3e9f3;border-radius:10px;
+    font-size:13px;
+  }
+  #export-scope-list .exp-item{
+    display:flex;align-items:center;gap:6px;
+    padding:3px 0;cursor:pointer;user-select:none;
+  }
+  #export-scope-list .exp-item input{
+    width:15px;height:15px;accent-color:var(--blue2);margin:0;flex:0 0 auto;
+  }
+  #export-scope-list .exp-item .exp-name{
+    flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  #export-scope-list .exp-item .exp-count{
+    color:var(--muted);font-size:11px;flex:0 0 auto;
+  }
+  #export-scope-list .exp-empty{
+    color:var(--muted);font-size:12px;padding:6px 0;
+  }
+
 </style>
 </head>
 <body>
@@ -659,6 +684,7 @@
           <button class="btn primary small" id="btn-bulk-apply">应用分组</button>
           <button class="btn ghost small" id="btn-bulk-ungroup">移出分组</button>
           <button class="btn ghost small" id="btn-bulk-clearsel">清空选择</button>
+          <button class="btn danger small" id="btn-bulk-delete">批量删除</button>
         </div>
       </div>
 
@@ -846,6 +872,28 @@ la pluie | rain || 第 11 课"></textarea>
         <button class="btn ghost" id="btn-reset-progress">重置学习进度</button>
         <button class="btn danger" id="btn-reset">清空并重置</button>
       </div>
+       <p class="muted small" style="margin:12px 0 6px">
+        导出为文档（便于打印 / 编辑 / 筛选）：
+      </p>
+      <div class="btn-row">
+        <button class="btn primary" id="btn-export-word">📄 导出 Word</button>
+        <button class="btn primary" id="btn-export-excel">📊 导出 Excel</button>
+      </div>
+        <div style="margin-top:12px">
+        <div class="list-meta" style="margin-bottom:6px">
+          <span class="muted small">导出范围（只影响单词）</span>
+          <span>
+            <button class="linkbtn" id="btn-scope-all" style="margin-right:4px">全选</button>
+            <button class="linkbtn" id="btn-scope-none">全不选</button>
+          </span>
+        </div>
+        <div id="export-scope-list"></div>
+        <label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;font-size:13px;color:#374151">
+          <input type="checkbox" id="export-include-sents" style="width:16px;height:16px;accent-color:var(--blue2);margin:0">
+          <span>附带句子本（另起一页）</span>
+        </label>
+      </div>
+
       <input type="file" id="file-input" accept=".json,application/json" hidden>
     </div>
   </section>
@@ -1165,7 +1213,9 @@ const DEFAULTS = {
   dismissedDueDate: '',
   retryIntensity: 'standard',
   onlyUnmastered: false,
-  wrongSort: 'streak'
+  wrongSort: 'streak',
+  exportGroups: null,
+  exportIncludeSents: true
 };
 
 let state = { words: [], settings: { ...DEFAULTS } };
@@ -1573,6 +1623,27 @@ let editingId = null;
 let pendingStartFrom = '';
 
 const getWord = id => state.words.find(w => w.id === id);
+// 用于判断"分组内是否已存在同一个词"
+function dupKey(fr){
+  let t = String(fr || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  t = t.replace(/[’‘`´]/g, "'");
+  t = t.replace(/œ/g, 'oe').replace(/æ/g, 'ae');
+  t = t.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  t = t.replace(/^(l'|les |le |la |un |une |des |du |de la |de l')/, '');
+  return t.trim();
+}
+// 返回同一分组里已存在的同名词（排除 excludeId，用于编辑场景跳过自己）
+function findDuplicateInGroup(fr, group, excludeId){
+  const k = dupKey(fr);
+  if (!k) return null;
+  const g = (group || '').trim();
+  const ex = excludeId || null;
+  return state.words.find(w =>
+    w.id !== ex &&
+    (w.group || '') === g &&
+    dupKey(w.fr) === k
+  ) || null;
+}
 const isDue = w => !w.nextDue || w.nextDue <= Date.now();
 const getProgress = id => round.progress[id] || 0;
 const isUnmastered = w => (w.box || 0) < 5 || isDue(w);
@@ -2404,7 +2475,9 @@ function submitMiniForm(){
   if (!fr){ toast('法文必填'); return; }
   if (!en){ toast('英文释义必填'); return; }
 
-  let w = findBookWord(fr);
+   // 优先同组复用（避免组内重复），其次全局复用（跨组则新建到指定组）
+  let w = findDuplicateInGroup(fr, group, null);
+  if (!w) w = findBookWord(fr);
   if (!w){
     w = makeWord(fr, zh, en, group);
     state.words.unshift(w);
@@ -2525,7 +2598,7 @@ function bindTabs(){
       btn.classList.add('active');
       $('panel-' + btn.dataset.tab).classList.add('active');
       if (btn.dataset.tab === 'book') renderBook();
-      if (btn.dataset.tab === 'set') renderGroupManage();
+      if (btn.dataset.tab === 'set'){ renderGroupManage(); renderExportScope(); }
       if (btn.dataset.tab === 'wrong') renderWrongPanel();
       if (btn.dataset.tab === 'sent') renderSentPanel();
     });
@@ -2725,7 +2798,7 @@ function bindBook(){
   $('search').addEventListener('input', renderBook);
   $('book-group').addEventListener('change', renderBook);
 
-  $('btn-add').addEventListener('click', () => {
+    $('btn-add').addEventListener('click', () => {
     const fr = $('f-fr').value.trim();
     const en = $('f-en').value.trim();
     const zh = $('f-zh').value.trim();
@@ -2736,12 +2809,24 @@ function bindBook(){
 
     if (editingId){
       const w = getWord(editingId);
-      if (w){ w.fr = fr; w.en = en; w.zh = zh; w.group = group; }
+      if (w){
+        const dup = findDuplicateInGroup(fr, group, w.id);
+        if (dup){
+          toast('分组「' + (group || '未分组') + '」里已有「' + dup.fr + '」');
+          return;
+        }
+        w.fr = fr; w.en = en; w.zh = zh; w.group = group;
+      }
       editingId = null;
       $('btn-add').textContent = '添加';
       $('btn-cancel-edit').hidden = true;
       toast('已保存修改');
     } else {
+      const dup = findDuplicateInGroup(fr, group, null);
+      if (dup){
+        toast('分组「' + (group || '未分组') + '」里已有「' + dup.fr + '」');
+        return;
+      }
       state.words.unshift(makeWord(fr, zh, en, group));
       toast('已添加');
     }
@@ -2862,18 +2947,30 @@ function bindBook(){
     if ($('bulk-new-group').value) $('bulk-target-group').value = '';
   });
 
-  $('btn-bulk-apply').addEventListener('click', () => {
+    $('btn-bulk-apply').addEventListener('click', () => {
     if (!selectedIds.size){ toast('先勾选要分组的单词'); return; }
     const target = getBulkTarget();
     if (!target){ toast('先选择或输入一个分组'); return; }
-    let n = 0;
+
+    let moved = 0, dups = [];
     state.words.forEach(w => {
-      if (selectedIds.has(w.id)){ w.group = target; n++; }
+      if (!selectedIds.has(w.id)) return;
+      if ((w.group || '') === target) return; // 已在目标组，跳过
+      const dup = findDuplicateInGroup(w.fr, target, w.id);
+      if (dup){ dups.push(w.fr); return; }
+      w.group = target;
+      moved++;
     });
+
     save();
     $('bulk-new-group').value = '';
     $('bulk-target-group').value = '';
-    toast('已把 ' + n + ' 个单词分到「' + target + '」');
+
+    if (dups.length){
+      toast('移动 ' + moved + ' 个，跳过 ' + dups.length + ' 个（目标组已有同名词）');
+    } else {
+      toast('已把 ' + moved + ' 个单词分到「' + target + '」');
+    }
     renderBook();
   });
 
@@ -2894,10 +2991,41 @@ function bindBook(){
     toast('已清空选择');
   });
 
-  $('btn-bulk').addEventListener('click', () => {
+  $('btn-bulk-delete').addEventListener('click', () => {
+    if (!selectedIds.size){ toast('先勾选要删除的单词'); return; }
+    const ids = new Set(selectedIds);
+    const n = ids.size;
+    if (!confirm('删除选中的 ' + n + ' 个单词？\n此操作不可撤销。')) return;
+
+    // 删词
+    state.words = state.words.filter(w => !ids.has(w.id));
+
+    // 清理句子本里对这些词的引用
+    state.sentences.forEach(s => {
+      s.wordIds = (s.wordIds || []).filter(x => !ids.has(x));
+    });
+
+    // 如果"从这里开始"指向被删的词，清掉
+    if (ids.has(state.settings.startFromId)) state.settings.startFromId = '';
+
+    // 从选中集合里移除
+    ids.forEach(id => selectedIds.delete(id));
+
+    save();
+    renderBook();
+    renderWrongPanel();
+    renderStartFromBar();
+
+    // 如果正在学的当前词被删了，换一张卡
+    if (ids.has(currentId)) nextCard();
+
+    toast('已删除 ' + n + ' 个单词');
+  });
+
+    $('btn-bulk').addEventListener('click', () => {
     const lines = ($('bulk').value || '').split(/\r?\n/);
     const defGroup = ($('bulk-group').value || '').trim();
-    let added = 0, skipped = 0;
+    let added = 0, skipped = 0, dups = 0;
 
     lines.forEach(line => {
       line = line.trim();
@@ -2909,20 +3037,30 @@ function bindBook(){
       const gp = parts[3] || defGroup;
       if (!fr) return;
       if (!en){ skipped++; return; }
+
+      // 同组内查重（含本次批量已加入的行，因为上面用了 unshift）
+      if (findDuplicateInGroup(fr, gp, null)){ dups++; return; }
+
       state.words.unshift(makeWord(fr, zh, en, gp));
       added++;
     });
 
     if (!added){
-      toast(skipped ? '没有可添加的行（英文必填）' : '没有可添加的行');
+      toast('没有可添加的行' +
+        (skipped ? '（' + skipped + ' 行无英文）' : '') +
+        (dups ? '（' + dups + ' 行重复）' : ''));
       return;
     }
     $('bulk').value = '';
     save();
     renderBook();
     renderWrongPanel();
-    toast('批量添加了 ' + added + ' 个词' + (skipped ? '，跳过 ' + skipped + ' 行（无英文）' : ''));
-  });
+
+    const bits = ['批量添加了 ' + added + ' 个词'];
+    if (skipped) bits.push('跳过 ' + skipped + ' 行（无英文）');
+    if (dups) bits.push('跳过 ' + dups + ' 行（同组重复）');
+    toast(bits.join('，'));
+  });    
 }
 
 function bindRead(){
@@ -3019,6 +3157,29 @@ function bindSettings(){
   bind('opt-article', 'ignoreArticle');
   bind('opt-en', 'showEn');
 
+  // ---- 导出范围 ----
+  const eList = $('export-scope-list');
+  if (eList){
+    eList.addEventListener('change', e => {
+      if (e.target.classList.contains('exp-g')) syncExportScopeToSettings();
+    });
+  }
+  $('btn-scope-all').addEventListener('click', () => {
+    document.querySelectorAll('#export-scope-list .exp-g').forEach(b => b.checked = true);
+    syncExportScopeToSettings();
+  });
+  $('btn-scope-none').addEventListener('click', () => {
+    document.querySelectorAll('#export-scope-list .exp-g').forEach(b => b.checked = false);
+    syncExportScopeToSettings();
+  });
+  $('export-include-sents').addEventListener('change', e => {
+    state.settings.exportIncludeSents = e.target.checked;
+    save();
+  });
+
+  $('btn-export-word').addEventListener('click', exportWord);
+  $('btn-export-excel').addEventListener('click', exportExcel);
+
   $('btn-test').addEventListener('click', () => {
     speak('Bonjour ! Voici un test de prononciation française.');
   });
@@ -3038,7 +3199,7 @@ function bindSettings(){
     toast('错词本已清空');
   });
 
-  $('group-manage').addEventListener('click', e => {
+   $('group-manage').addEventListener('click', e => {
     const btn = e.target.closest('button[data-gact]');
     if (!btn) return;
     const g = btn.closest('.word').dataset.g;
@@ -3050,6 +3211,27 @@ function bindSettings(){
       if (name === null) return;
       const nn = name.trim();
       if (!nn || nn === g) return;
+
+      // 目标组已存在 → 合并，只移不重复的词
+      if (getGroups().includes(nn)){
+        if (!confirm('分组「' + nn + '」已存在，改名会与它合并。\n' +
+                     '同名的词会被跳过（留在原组不变）。是否继续？')) return;
+        let moved = 0, skipped = 0;
+        state.words.forEach(w => {
+          if (w.group !== g) return;
+          const dup = state.words.find(x =>
+            x.group === nn && dupKey(x.fr) === dupKey(w.fr));
+          if (dup){ skipped++; return; }
+          w.group = nn;
+          moved++;
+        });
+        if (state.settings.studyGroup === g) state.settings.studyGroup = nn;
+        save();
+        renderBook();
+        toast('已合并：移动 ' + moved + ' 个，跳过 ' + skipped + ' 个重复词');
+        return;
+      }
+
       state.words.forEach(w => { if (w.group === g) w.group = nn; });
       if (state.settings.studyGroup === g) state.settings.studyGroup = nn;
       save();
@@ -3058,6 +3240,21 @@ function bindSettings(){
     }
 
     if (act === 'del'){
+      // 解散后会落到「未分组」，先检查冲突
+      const conflicts = state.words.filter(w =>
+        w.group === g &&
+        state.words.some(x =>
+          x.group === '' && dupKey(x.fr) === dupKey(w.fr))
+      );
+      if (conflicts.length){
+        const sample = conflicts.slice(0, 5).map(w => '· ' + w.fr).join('\n');
+        alert('不能解散「' + g + '」：\n\n' +
+              '「未分组」里已有 ' + conflicts.length + ' 个同名词：\n\n' +
+              sample + (conflicts.length > 5 ? '\n…' : '') +
+              '\n\n请先在单词本里把重复的词处理掉（改分组 / 删除）再解散。');
+        return;
+      }
+
       if (!confirm('解散分组「' + g + '」？\n组内 ' + n + ' 个词会变成「未分组」。')) return;
       state.words.forEach(w => { if (w.group === g) w.group = ''; });
       if (state.settings.studyGroup === g) state.settings.studyGroup = '';
@@ -3091,10 +3288,7 @@ function bindSettings(){
       let added = 0;
       incoming.forEach(w => {
         if (!w || !w.fr) return;
-        const dup = state.words.some(x =>
-          x.fr.toLowerCase() === String(w.fr).toLowerCase() &&
-          (x.group || '') === (w.group || ''));
-        if (dup) return;
+        if (findDuplicateInGroup(w.fr, w.group || '', null)) return;
         state.words.push(makeWord(w.fr, w.zh, w.en, w.group || '', w));
         added++;
       });
@@ -3164,13 +3358,309 @@ function bindSettings(){
     selectedIds.clear();
     bulkMode = false;
     save();
-    applySettingsToUI();
+    applySettingsToUI();renderExportScope();
     renderBook();
     renderWrongPanel();
     startRound();
     toast('已重置为初始词库');
   });
 }
+
+/* ========== 导出 Word / Excel ========== */
+
+function downloadBlob(content, filename, mime){
+  const blob = new Blob(['\ufeff' + content], { type: mime });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+}
+
+function todayStamp(){
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+       + '-' + p(d.getHours()) + p(d.getMinutes());
+}
+
+function collectGroupedWords(filterFn){
+  filterFn = filterFn || (() => true);
+  const groups = getGroups();
+  const map = {};
+  groups.forEach(g => map[g] = []);
+  const ungrouped = [];
+  state.words.forEach(w => {
+    if (!filterFn(w)) return;
+    if (w.group && map[w.group]) map[w.group].push(w);
+    else ungrouped.push(w);
+  });
+  return { groups, map, ungrouped };
+}
+
+/* ---------- 导出范围 UI ---------- */
+
+function renderExportScope(){
+  const list = $('export-scope-list');
+  if (!list) return;
+
+  const groups = getGroups();
+  const items = groups.map(g => ({
+    key: 'g:' + g,
+    label: g,
+    count: state.words.filter(w => w.group === g).length
+  }));
+  const noneN = state.words.filter(w => !w.group).length;
+  if (noneN) items.push({ key: '__none__', label: '（未分组）', count: noneN });
+
+  if (!items.length){
+    list.innerHTML = '<div class="exp-empty">还没有单词</div>';
+    $('export-include-sents').checked = state.settings.exportIncludeSents !== false;
+    return;
+  }
+
+  let selected = state.settings.exportGroups;
+  if (!Array.isArray(selected)){
+    selected = items.map(it => it.key);
+  } else {
+    const valid = new Set(items.map(it => it.key));
+    const kept = selected.filter(k => valid.has(k));
+    const known = new Set(kept);
+    items.forEach(it => { if (!known.has(it.key)) kept.push(it.key); });
+    selected = kept;
+  }
+  const setSel = new Set(selected);
+
+  list.innerHTML = items.map(it =>
+    '<label class="exp-item">' +
+      '<input type="checkbox" class="exp-g" value="' + esc(it.key) + '"' +
+        (setSel.has(it.key) ? ' checked' : '') + '>' +
+      '<span class="exp-name">' + esc(it.label) + '</span>' +
+      '<span class="exp-count">' + it.count + ' 词</span>' +
+    '</label>'
+  ).join('');
+
+  $('export-include-sents').checked = state.settings.exportIncludeSents !== false;
+
+  syncExportScopeToSettings();
+}
+
+function syncExportScopeToSettings(){
+  const boxes = document.querySelectorAll('#export-scope-list .exp-g');
+  if (!boxes.length) return;
+  const checked = [];
+  boxes.forEach(b => { if (b.checked) checked.push(b.value); });
+  state.settings.exportGroups = checked;
+  save();
+}
+
+function getExportFilter(){
+  const boxes = document.querySelectorAll('#export-scope-list .exp-g');
+  if (!boxes.length) return () => true;
+  const checked = new Set();
+  boxes.forEach(b => { if (b.checked) checked.add(b.value); });
+  return (w) => {
+    const k = w.group ? ('g:' + w.group) : '__none__';
+    return checked.has(k);
+  };
+}
+
+/* ---------- 导出 Word ---------- */
+
+function exportWord(){
+  const filterFn = getExportFilter();
+  const { groups, map, ungrouped } = collectGroupedWords(filterFn);
+  const includeSents = state.settings.exportIncludeSents !== false;
+
+  const totalWords = state.words.filter(filterFn).length;
+  const includedSents = includeSents ? state.sentences : [];
+  const totalSents = includedSents.length;
+
+  if (!totalWords && !totalSents){
+    toast('导出范围为空，请先勾选分组或勾选「附带句子本」');
+    return;
+  }
+
+  const thead =
+    '<thead><tr>' +
+      '<th style="width:42%">法文</th>' +
+      '<th style="width:30%">英文</th>' +
+      '<th style="width:28%">中文</th>' +
+    '</tr></thead>';
+
+  const renderWordsTable = (list) =>
+    '<table>' + thead + '<tbody>' +
+    list.map(w =>
+      '<tr>' +
+        '<td class="fr">' + esc(w.fr) + '</td>' +
+        '<td class="en">' + esc(w.en || '') + '</td>' +
+        '<td class="zh">' + esc(w.zh || '') + '</td>' +
+      '</tr>'
+    ).join('') +
+    '</tbody></table>';
+
+  let body = '';
+
+  if (totalWords){
+    body += '<h2>📚 单词本</h2>';
+    groups.forEach(g => {
+      const list = map[g].slice().sort((a, b) => a.fr.localeCompare(b.fr, 'fr'));
+      if (!list.length) return;
+      body += '<h3 class="group-title">' + esc(g) + ' · ' + list.length + ' 词</h3>';
+      body += renderWordsTable(list);
+    });
+    if (ungrouped.length){
+      const list = ungrouped.slice().sort((a, b) => a.fr.localeCompare(b.fr, 'fr'));
+      body += '<h3 class="group-title">未分组 · ' + list.length + ' 词</h3>';
+      body += renderWordsTable(list);
+    }
+  }
+
+  if (totalSents){
+    const needBreak = totalWords > 0;
+    body += '<h2' + (needBreak ? ' class="page-break"' : '') + '>📝 句子本</h2>';
+    const sents = includedSents.slice().sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    body +=
+      '<table><thead><tr>' +
+        '<th style="width:58%">法文</th>' +
+        '<th style="width:24%">中文</th>' +
+        '<th style="width:18%">备注</th>' +
+      '</tr></thead><tbody>' +
+      sents.map(s =>
+        '<tr>' +
+          '<td class="fr">' + esc(s.text) + '</td>' +
+          '<td class="zh">' + esc(s.zh || '') + '</td>' +
+          '<td class="note">' + esc(s.note || '') + '</td>' +
+        '</tr>'
+      ).join('') +
+      '</tbody></table>';
+  }
+
+  const html =
+    '<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
+    'xmlns:w="urn:schemas-microsoft-com:office:word" ' +
+    'xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8">' +
+    '<title>法语单词本</title>' +
+    '<!--[if gte mso 9]><xml><w:WordDocument>' +
+    '<w:View>Print</w:View><w:Zoom>100</w:Zoom>' +
+    '</w:WordDocument></xml><![endif]-->' +
+    '<style>' +
+      '@page { size: A4; margin: 1.4cm 1.2cm 1.4cm 1.2cm; }' +
+      'body { font-family: "Times New Roman", "SimSun", "宋体", serif; font-size: 10pt; color: #000; line-height: 1.35; }' +
+      'h1 { font-size: 16pt; text-align: center; margin: 0 0 4pt; }' +
+      '.subtitle { text-align: center; font-size: 9pt; color: #666; margin-bottom: 10pt; }' +
+      'h2 { font-size: 12pt; margin: 10pt 0 6pt; padding: 4pt 8pt; background: #1F3864; color: #fff; }' +
+      'h3.group-title { font-size: 10.5pt; margin: 8pt 0 3pt; padding: 2pt 8pt; color: #1F3864; ' +
+        'background: #eef1f6; border-left: 3pt solid #1F3864; page-break-after: avoid; }' +
+      'table { width: 100%; border-collapse: collapse; margin: 0 0 4pt; }' +
+      'th { background: #1F3864; color: #fff; font-size: 9.5pt; padding: 3pt 6pt; text-align: left; font-weight: 600; }' +
+      'td { padding: 2.5pt 6pt; border-bottom: 0.5pt solid #d8dde5; vertical-align: top; font-size: 10pt; }' +
+      'tr { page-break-inside: avoid; }' +
+      'td.fr { font-weight: 600; }' +
+      'td.en { color: #444; font-style: italic; }' +
+      'td.zh, td.note { color: #333; }' +
+      '.page-break { page-break-before: always; }' +
+      '.empty { color: #999; font-style: italic; }' +
+    '</style></head><body>' +
+      '<h1>法语单词本 · Mon Carnet</h1>' +
+      '<div class="subtitle">导出时间：' + new Date().toLocaleString('zh-CN') +
+        ' · 单词 ' + totalWords + ' 个 · 句子 ' + totalSents + ' 个</div>' +
+      body +
+    '</body></html>';
+
+  downloadBlob(html, '法语单词本-' + todayStamp() + '.doc', 'application/msword;charset=utf-8');
+  toast('已导出 Word：单词 ' + totalWords + ' · 句子 ' + totalSents);
+}
+
+/* ---------- 导出 Excel ---------- */
+
+function exportExcel(){
+  const filterFn = getExportFilter();
+  const { groups, map, ungrouped } = collectGroupedWords(filterFn);
+  const includeSents = state.settings.exportIncludeSents !== false;
+
+  const totalWords = state.words.filter(filterFn).length;
+  const includedSents = includeSents ? state.sentences : [];
+  const totalSents = includedSents.length;
+
+  if (!totalWords && !totalSents){
+    toast('导出范围为空，请先勾选分组或勾选「附带句子本」');
+    return;
+  }
+
+  const cell = (txt, cls) => '<td' + (cls ? ' class="' + cls + '"' : '') + '>' + esc(txt) + '</td>';
+
+  let wRows = '';
+  if (totalWords){
+    wRows += '<tr><td colspan="3" class="h-blk">📚 单词本（' + totalWords + ' 个）</td></tr>';
+    wRows += '<tr>' +
+      '<th style="width:240px">法文</th>' +
+      '<th style="width:240px">英文</th>' +
+      '<th style="width:180px">中文</th>' +
+    '</tr>';
+    groups.forEach(g => {
+      const list = map[g].slice().sort((a, b) => a.fr.localeCompare(b.fr, 'fr'));
+      if (!list.length) return;
+      wRows += '<tr><td colspan="3" class="grp-blk">' + esc(g) + ' · ' + list.length + ' 词</td></tr>';
+      list.forEach(w => {
+        wRows += '<tr>' + cell(w.fr) + cell(w.en || '', 'en') + cell(w.zh || '') + '</tr>';
+      });
+    });
+    if (ungrouped.length){
+      const list = ungrouped.slice().sort((a, b) => a.fr.localeCompare(b.fr, 'fr'));
+      wRows += '<tr><td colspan="3" class="grp-blk">未分组 · ' + list.length + ' 词</td></tr>';
+      list.forEach(w => {
+        wRows += '<tr>' + cell(w.fr) + cell(w.en || '', 'en') + cell(w.zh || '') + '</tr>';
+      });
+    }
+  }
+
+  let sRows = '';
+  if (totalSents){
+    sRows += '<tr><td colspan="3" class="h-blk">📝 句子本（' + totalSents + ' 个）</td></tr>';
+    sRows += '<tr>' +
+      '<th style="width:400px">法文</th>' +
+      '<th style="width:200px">中文</th>' +
+      '<th style="width:160px">备注</th>' +
+    '</tr>';
+    includedSents.slice()
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+      .forEach(s => {
+        sRows += '<tr>' + cell(s.text) + cell(s.zh || '') + cell(s.note || '', 'note') + '</tr>';
+      });
+  }
+
+  const html =
+    '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
+    'xmlns:x="urn:schemas-microsoft-com:office:excel" ' +
+    'xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8">' +
+    '<!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets>' +
+    '<x:ExcelWorksheet><x:Name>法语单词本</x:Name>' +
+    '<x:WorksheetOptions><x:DoNotDisplayGridlines/></x:WorksheetOptions>' +
+    '</x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->' +
+    '<style>' +
+      'table { border-collapse: collapse; }' +
+      'td, th { font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; font-size: 11pt; ' +
+        'padding: 3px 8px; vertical-align: top; border-bottom: 1px solid #d8dde5; }' +
+      'th { background: #1F3864; color: #fff; font-weight: 600; text-align: left; }' +
+      '.h-blk { font-size: 14pt; font-weight: bold; color: #1F3864; border-bottom: none; padding: 6px 8px 4px; }' +
+      '.grp-blk { background: #eef1f6; color: #1F3864; font-weight: bold; border-top: 1px solid #1F3864; padding: 4px 8px; }' +
+      '.en { color: #444; }' +
+      '.note { color: #666; }' +
+      '.empty { color: #999; font-style: italic; }' +
+      '.gap td { height: 14px; border-bottom: none; }' +
+    '</style></head><body>' +
+    (wRows ? '<table>' + wRows + '</table>' : '') +
+    (wRows && sRows ? '<table class="gap"><tr><td colspan="3"></td></tr></table>' : '') +
+    (sRows ? '<table>' + sRows + '</table>' : '') +
+    '</body></html>';
+
+  downloadBlob(html, '法语单词本-' + todayStamp() + '.xls', 'application/vnd.ms-excel;charset=utf-8');
+  toast('已导出 Excel：单词 ' + totalWords + ' · 句子 ' + totalSents);
+}
+
 
 function applySettingsToUI(){
   $('rate').value = state.settings.rate;
